@@ -1,0 +1,5 @@
+{
+  "name": "TradeFolio Master",
+  "description": "A professional stock portfolio manager specifically optimized for the Colombo Stock Exchange, featuring real-time price tracking via Gemini AI, local data persistence, and performance analytics.",
+  "requestFramePermissions": []
+}
