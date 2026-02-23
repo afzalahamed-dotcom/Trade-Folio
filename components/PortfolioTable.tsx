@@ -101,6 +101,7 @@ export const PortfolioTable: React.FC<Props> = ({
             <th className="px-6 py-4 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Asset Vector</th>
             <th className="px-6 py-4 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Units</th>
             <th className="px-6 py-4 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Avg Cost</th>
+            <th className="px-6 py-4 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Cost</th>
             <th className="px-6 py-4 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Price Point</th>
             <th className="px-6 py-4 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Net Flux</th>
             <th className="px-6 py-4 text-center text-[10px] font-black text-slate-400 uppercase tracking-widest">Interface</th>
@@ -137,6 +138,9 @@ export const PortfolioTable: React.FC<Props> = ({
                   </td>
                   <td className="px-6 py-5 whitespace-nowrap text-sm text-right font-mono-terminal font-bold text-slate-400">
                     {row.avgBuyPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </td>
+                  <td className="px-6 py-5 whitespace-nowrap text-sm text-right font-mono-terminal font-bold text-slate-900">
+                    {row.totalInvestment.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                   </td>
                   <td className="px-6 py-5 whitespace-nowrap text-sm text-right">
                     {renderEditableCell(row.ticker, 'currentPrice', row.currentPrice, row.currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2 }), true)}
@@ -178,6 +182,9 @@ export const PortfolioTable: React.FC<Props> = ({
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-xs text-right text-slate-400 font-bold font-mono-terminal">
                       {renderEditableCell(lot.transactionId, 'purchasePrice', lot.purchasePrice, lot.purchasePrice.toLocaleString(undefined, { minimumFractionDigits: 2 }), true)}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-xs text-right text-slate-400 font-bold font-mono-terminal">
+                      {lot.totalPurchaseNet.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-xs text-right text-slate-500">
                       <div className="flex flex-col items-end font-mono-terminal">
