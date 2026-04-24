@@ -187,9 +187,16 @@ const App: React.FC = () => {
 
     const dashboardRows: PortfolioRow[] = Object.entries(inventory).map(([ticker, lots]) => {
       const currentPrice = prices[ticker] || 0;
+      const purificationPct = halalList[ticker] ?? 0;
+      
       const activeLots: PortfolioLot[] = lots.map(l => {
         const value = round(l.qty * currentPrice);
-        const pl = currentPrice > 0 ? round(value - l.net) : 0;
+        // Estimate selling fees/taxes (approx 1.12% for CSE retail)
+        const sellingCosts = round(value * 0.0112);
+        const rawPL = value - l.net - sellingCosts;
+        const purification = (rawPL > 0 && purificationPct > 0) ? round(rawPL * (purificationPct / 100)) : 0;
+        
+        const pl = currentPrice > 0 ? round(rawPL - purification) : 0;
         const plPerc = l.net > 0 ? (pl / l.net) * 100 : 0;
         return {
           transactionId: l.id,
@@ -206,7 +213,7 @@ const App: React.FC = () => {
       const totalQty = activeLots.reduce((s, l) => s + l.quantity, 0);
       const totalInvestment = round(activeLots.reduce((s, l) => s + l.totalPurchaseNet, 0));
       const totalValue = round(totalQty * currentPrice);
-      const profitOrLoss = round(totalValue - totalInvestment);
+      const profitOrLoss = round(activeLots.reduce((s, l) => s + l.profitOrLoss, 0));
       const profitPercentage = totalInvestment > 0 ? (profitOrLoss / totalInvestment) * 100 : 0;
       const avgBuyPrice = totalQty > 0 ? totalInvestment / totalQty : 0;
 

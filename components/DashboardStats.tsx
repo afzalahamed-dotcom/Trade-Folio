@@ -9,7 +9,7 @@ interface Props {
 export const DashboardStats: React.FC<Props> = ({ data }) => {
   const totalValue = data.reduce((acc, curr) => acc + curr.totalValue, 0);
   const totalInvestment = data.reduce((acc, curr) => acc + curr.totalInvestment, 0);
-  const totalPL = totalValue - totalInvestment;
+  const totalPL = data.reduce((acc, curr) => acc + curr.profitOrLoss, 0);
   const plPercentage = totalInvestment > 0 ? (totalPL / totalInvestment) * 100 : 0;
 
   return (
