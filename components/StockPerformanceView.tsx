@@ -158,8 +158,11 @@ export const StockPerformanceView: React.FC<Props> = ({ portfolio }) => {
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <p className="text-[10px] uppercase font-bold opacity-70">Avg Cost</p>
-                    <p className="text-lg font-bold">{(currentStock?.avgBuyPrice || 0).toFixed(2)}</p>
+                    <p className="text-[10px] uppercase font-bold opacity-70" title="Break Even Selling Price">BES Price</p>
+                    <p className="text-lg font-bold">{(currentStock?.besPrice || (currentStock?.avgBuyPrice ? currentStock.avgBuyPrice / (1 - 0.0112) : 0)).toFixed(2)}</p>
+                    {currentStock?.avgBuyPrice && (
+                      <p className="text-[9px] opacity-60 font-mono-terminal">AVG {currentStock.avgBuyPrice.toFixed(2)}</p>
+                    )}
                   </div>
                   <div>
                     <p className="text-[10px] uppercase font-bold opacity-70">Current</p>

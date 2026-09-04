@@ -57,6 +57,12 @@ const HolographicTooltip = ({ active, payload, halalList }: any) => {
               </span>
             </div>
           </div>
+          {data.besPrice > 0 && (
+            <div className="pt-2 border-t border-slate-100 flex justify-between items-center text-[10px] font-mono-terminal">
+              <span className="text-slate-400 font-bold uppercase">BES Price</span>
+              <span className="font-black text-slate-800">LKR {data.besPrice.toFixed(2)}</span>
+            </div>
+          )}
         </div>
 
         <div className="absolute top-0 left-1/4 right-1/4 h-[1px] bg-indigo-500/30" />
@@ -85,6 +91,7 @@ export const FuturisticPortfolioVisuals: React.FC<Props> = ({ data, halalList })
       fullTicker: item.ticker,
       profitOrLoss: item.profitOrLoss,
       profitPercentage: item.profitPercentage,
+      besPrice: item.besPrice,
       weight: item.totalValue,
       normWeight: Math.log10(item.totalValue + 1) * 20 
     })).sort((a, b) => b.profitPercentage - a.profitPercentage);

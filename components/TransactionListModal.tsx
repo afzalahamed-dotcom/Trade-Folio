@@ -43,19 +43,30 @@ export const TransactionListModal: React.FC<Props> = ({ ticker, transactions, on
                   <p className="text-sm font-black text-gray-900">
                     {tx.quantity.toLocaleString()} Shares @ LKR {tx.buyPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                   </p>
-                  <p className="text-[10px] text-gray-400 font-bold uppercase tracking-tight">{tx.date}</p>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-[10px] text-gray-400 font-bold uppercase tracking-tight">{tx.date}</span>
+                    {tx.type === 'BUY' && (
+                      <span className="text-[10px] font-mono-terminal font-black text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-100">
+                        BES LKR {(tx.besPrice || ((tx.buyPrice * 1.0112) / 0.9888)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
               <div className="flex gap-2">
                 <button 
+                  type="button"
                   onClick={() => onEdit(tx)}
-                  className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                  className="p-2 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                  title="Edit transaction"
                 >
                   <Edit2 className="w-4 h-4" />
                 </button>
                 <button 
+                  type="button"
                   onClick={() => onDelete(tx.id)}
-                  className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                  className="p-2 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                  title="Delete transaction record"
                 >
                   <Trash2 className="w-4 h-4" />
                 </button>

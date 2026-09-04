@@ -50,15 +50,26 @@ const robustParseDate = (dateStr: string): number => {
   return isNaN(timestamp) ? 0 : timestamp;
 };
 
-const normalizeTransactionData = (tx: any): Transaction => ({
-  id: tx.id || crypto.randomUUID(),
-  ticker: normalizeTicker(tx.ticker || tx.symbol || tx.stock || ''),
-  quantity: Number(tx.quantity || tx.qty || tx.volume || 0),
-  buyPrice: Number(tx.buyPrice || tx.price || tx.avgPrice || tx.avgCost || 0),
-  netAmount: Number(tx.netAmount || tx.totalAmount || tx.cost || ((tx.quantity || tx.qty || 0) * (tx.buyPrice || tx.price || 0)) || 0),
-  date: tx.date || new Date().toISOString().split('T')[0],
-  type: (tx.type || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY'
-});
+const normalizeTransactionData = (tx: any): Transaction => {
+  const qty = Number(tx.quantity || tx.qty || tx.volume || 0);
+  const prc = Number(tx.buyPrice || tx.price || tx.avgPrice || tx.avgCost || 0);
+  const type = (tx.type || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+  let net = Number(tx.netAmount || tx.totalAmount || tx.cost || 0);
+  if (!net && qty > 0 && prc > 0) {
+    net = type === 'BUY' ? round(qty * prc * 1.0112) : round(qty * prc * (1 - 0.0112));
+  }
+  return {
+    id: tx.id || crypto.randomUUID(),
+    ticker: normalizeTicker(tx.ticker || tx.symbol || tx.stock || ''),
+    quantity: qty,
+    buyPrice: prc,
+    netAmount: net,
+    besPrice: tx.besPrice ? Number(tx.besPrice) : undefined,
+    sellPrice: tx.sellPrice ? Number(tx.sellPrice) : undefined,
+    date: tx.date || new Date().toISOString().split('T')[0],
+    type
+  };
+};
 
 const App: React.FC = () => {
   // --- CORE STATE ---
@@ -75,6 +86,7 @@ const App: React.FC = () => {
   const [showAddForm, setShowAddForm] = useState(false);
   const [showImporter, setShowImporter] = useState(false);
   const [showJsonRecall, setShowJsonRecall] = useState(false);
+  const [showRestoreModal, setShowRestoreModal] = useState(false);
   const [showThemeSelector, setShowThemeSelector] = useState(false);
   const [recallJsonInput, setRecallJsonInput] = useState('');
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
@@ -83,6 +95,26 @@ const App: React.FC = () => {
   const [selectedTickerForEdit, setSelectedTickerForEdit] = useState<string | null>(null);
   const [hasLoadedInitially, setHasLoadedInitially] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // In-app confirmation dialog state (replaces window.confirm)
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string;
+    subtitle?: string;
+    message: string;
+    confirmLabel?: string;
+    isDestructive?: boolean;
+    onConfirm: () => void;
+  } | null>(null);
+
+  // Non-blocking in-app notification toasts (replaces alert)
+  const [toast, setToast] = useState<{ message: string; submessage?: string; type?: 'success' | 'info' | 'error' } | null>(null);
+
+  const triggerToast = useCallback((message: string, submessage?: string, type: 'success' | 'info' | 'error' = 'success') => {
+    setToast({ message, submessage, type });
+    setTimeout(() => {
+      setToast(prev => (prev?.message === message ? null : prev));
+    }, 3800);
+  }, []);
 
   // --- THEME ENGINE ---
   useEffect(() => {
@@ -142,7 +174,7 @@ const App: React.FC = () => {
       return a.type === 'BUY' ? -1 : 1;
     });
 
-    const inventory: Record<string, { id: string, qty: number, net: number, date: string, unitCost: number }[]> = {};
+    const inventory: Record<string, { id: string, qty: number, net: number, date: string, unitCost: number, besPrice?: number }[]> = {};
     const ledger: (Transaction & { realizedPL: number | null, purification: number | null, unitCostBasis: number | null })[] = [];
 
     chronological.forEach(tx => {
@@ -153,12 +185,14 @@ const App: React.FC = () => {
 
       if (tx.type === 'BUY') {
         if (!inventory[ticker]) inventory[ticker] = [];
+        const unitCost = tx.buyPrice > 0 ? tx.buyPrice : (tx.quantity > 0 ? tx.netAmount / tx.quantity : 0);
         inventory[ticker].push({
           id: tx.id,
           qty: tx.quantity,
           net: tx.netAmount,
           date: tx.date,
-          unitCost: tx.netAmount / tx.quantity
+          unitCost,
+          besPrice: tx.besPrice
         });
       } else {
         let sellQtyLeft = tx.quantity;
@@ -198,10 +232,36 @@ const App: React.FC = () => {
         
         const pl = currentPrice > 0 ? round(rawPL - purification) : 0;
         const plPerc = l.net > 0 ? (pl / l.net) * 100 : 0;
+        
+        // Break Even Selling (BES) price for this lot:
+        // CSE retail: 1.12% buy cost, 1.12% sell cost.
+        // 1. If explicit besPrice is set by user or transaction, use it!
+        let lotBesPrice = l.besPrice ? Number(l.besPrice) : 0;
+        if (!lotBesPrice || lotBesPrice <= 0) {
+          if (l.unitCost > 0) {
+            const grossCost = l.qty * l.unitCost;
+            if (l.net > grossCost * 1.005) {
+              // l.net includes the buy-side transaction fees (contract net)
+              lotBesPrice = l.net / (l.qty * (1 - 0.0112));
+            } else {
+              // l.net was entered as pure gross or without buy fees.
+              // Account for BOTH buy fee (+1.12%) and sell fee (-1.12%):
+              // Formula: (unitCost * 1.0112) / (1 - 0.0112)
+              // For ATL @ 24.50: (24.50 * 1.0112) / 0.9888 = 25.0548 ≈ 25.05
+              lotBesPrice = (l.unitCost * 1.0112) / (1 - 0.0112);
+            }
+          } else if (l.qty > 0 && l.net > 0) {
+            lotBesPrice = l.net / (l.qty * (1 - 0.0112));
+          } else {
+            lotBesPrice = 0;
+          }
+        }
+
         return {
           transactionId: l.id,
           quantity: l.qty,
           purchasePrice: l.unitCost,
+          besPrice: lotBesPrice,
           totalPurchaseNet: round(l.net),
           currentValue: value,
           profitOrLoss: pl,
@@ -215,10 +275,16 @@ const App: React.FC = () => {
       const totalValue = round(totalQty * currentPrice);
       const profitOrLoss = round(activeLots.reduce((s, l) => s + l.profitOrLoss, 0));
       const profitPercentage = totalInvestment > 0 ? (profitOrLoss / totalInvestment) * 100 : 0;
-      const avgBuyPrice = totalQty > 0 ? totalInvestment / totalQty : 0;
+      const avgBuyPrice = totalQty > 0 ? activeLots.reduce((s, l) => s + (l.quantity * l.purchasePrice), 0) / totalQty : 0;
+      
+      // Position-level BES Price:
+      // Weighted average of each lot's BES price, ensuring selling all shares at besPrice breaks even after 1.12% CSE sell fee
+      const besPrice = totalQty > 0 
+        ? activeLots.reduce((s, l) => s + (l.quantity * (l.besPrice || 0)), 0) / totalQty
+        : 0;
 
       return {
-        ticker, totalQty, avgBuyPrice, currentPrice, totalValue, totalInvestment, profitOrLoss, profitPercentage, lots: activeLots
+        ticker, totalQty, avgBuyPrice, besPrice, currentPrice, totalValue, totalInvestment, profitOrLoss, profitPercentage, lots: activeLots
       };
     }).filter(row => row.totalQty > 0.0001);
 
@@ -239,14 +305,85 @@ const App: React.FC = () => {
   // --- HANDLERS ---
   const handleDelete = (id: string) => {
     if (!id) return;
-    if (window.confirm("Permanently delete this transaction record?")) {
-      setTransactions(prev => prev.filter(t => t.id !== id));
-    }
+    const tx = transactions.find(t => t.id === id);
+    const label = tx ? `${tx.ticker} (${tx.type} ${tx.quantity.toLocaleString()} @ LKR ${tx.buyPrice})` : 'transaction record';
+    setConfirmDialog({
+      title: "Delete Transaction",
+      subtitle: "Permanent Record Removal",
+      message: `Are you sure you want to permanently delete this ${label}? This will remove it from all portfolio calculations.`,
+      confirmLabel: "Delete Record",
+      isDestructive: true,
+      onConfirm: () => {
+        setTransactions(prev => prev.filter(t => t.id !== id));
+        triggerToast("Transaction Deleted", "The record was permanently removed.");
+      }
+    });
+  };
+
+  const handleDeleteTicker = (ticker: string) => {
+    if (!ticker) return;
+    const norm = normalizeTicker(ticker);
+    const count = transactions.filter(tr => normalizeTicker(tr.ticker) === norm).length;
+    setConfirmDialog({
+      title: `Delete Positions for ${ticker}`,
+      subtitle: "Holdings Deletion",
+      message: `Are you sure you want to delete all positions for ${ticker}? This will permanently wipe all ${count} transaction ${count === 1 ? 'record' : 'records'} associated with this ticker.`,
+      confirmLabel: "Delete Positions",
+      isDestructive: true,
+      onConfirm: () => {
+        setTransactions(prev => prev.filter(tr => normalizeTicker(tr.ticker) !== norm));
+        triggerToast(`Deleted ${ticker}`, `Removed all ${count} position records.`);
+      }
+    });
   };
 
   const handleEditSubmit = (id: string, updatedFields: Partial<Transaction>) => {
     setTransactions(prev => prev.map(t => t.id === id ? { ...t, ...updatedFields } : t));
     setEditingTransaction(null);
+    triggerToast("Changes Saved", "Transaction record updated.");
+  };
+
+  const handleUpdateBesPrice = (idOrTicker: string, newBesPrice: number, context?: any) => {
+    if (newBesPrice <= 0) return;
+    
+    // Check if idOrTicker matches a transaction ID
+    const isTx = transactions.some(t => t.id === idOrTicker);
+    if (isTx) {
+      setTransactions(prev => prev.map(t => {
+        if (t.id !== idOrTicker) return t;
+        // From BES price, derive execution price and net consideration
+        // BES = (buyPrice * 1.0112) / 0.9888 => buyPrice = BES * 0.9888 / 1.0112
+        const derivedBuyPrice = round((newBesPrice * 0.9888) / 1.0112 * 100) / 100;
+        const derivedNet = round(t.quantity * newBesPrice * (1 - 0.0112));
+        return {
+          ...t,
+          besPrice: newBesPrice,
+          buyPrice: derivedBuyPrice,
+          netAmount: derivedNet
+        };
+      }));
+      triggerToast("BES Price Updated", `Lot BES price set to LKR ${newBesPrice.toFixed(2)}.`);
+    } else {
+      // It's a ticker symbol (e.g. 'ATL.N0000' or 'ATL')
+      const targetTicker = normalizeTicker(idOrTicker);
+      setTransactions(prev => {
+        const matchingTxs = prev.filter(t => normalizeTicker(t.ticker) === targetTicker && t.type === 'BUY');
+        if (matchingTxs.length === 0) return prev;
+        
+        return prev.map(t => {
+          if (normalizeTicker(t.ticker) !== targetTicker || t.type !== 'BUY') return t;
+          const derivedBuyPrice = round((newBesPrice * 0.9888) / 1.0112 * 100) / 100;
+          const derivedNet = round(t.quantity * newBesPrice * (1 - 0.0112));
+          return {
+            ...t,
+            besPrice: newBesPrice,
+            buyPrice: derivedBuyPrice,
+            netAmount: derivedNet
+          };
+        });
+      });
+      triggerToast("BES Price Updated", `${targetTicker} BES price set to LKR ${newBesPrice.toFixed(2)}.`);
+    }
   };
 
   const handleResetPurificationDue = () => {
@@ -256,31 +393,72 @@ const App: React.FC = () => {
 
     if (totalPurificationDue <= 0.01) return;
     const currentDue = totalPurificationDue;
-    if (window.confirm(`Settle LKR ${currentDue.toLocaleString()} purification obligation?`)) {
-      const newPayment: PurificationPayment = { 
-        id: crypto.randomUUID(), 
-        amount: currentDue, 
-        date: new Date().toISOString().split('T')[0], 
-        notes: 'Manual Settlement' 
-      };
-      setPurificationPayments(prev => [...prev, newPayment]);
-    }
+    setConfirmDialog({
+      title: "Settle Due Balance",
+      subtitle: "Purification Obligation",
+      message: `Record a settlement payment of LKR ${currentDue.toLocaleString()} to clear your outstanding purification balance?`,
+      confirmLabel: "Confirm Settlement",
+      isDestructive: false,
+      onConfirm: () => {
+        const newPayment: PurificationPayment = { 
+          id: crypto.randomUUID(), 
+          amount: currentDue, 
+          date: new Date().toISOString().split('T')[0], 
+          notes: 'Manual Settlement' 
+        };
+        setPurificationPayments(prev => [...prev, newPayment]);
+        triggerToast("Purification Settled", `LKR ${currentDue.toLocaleString()} logged as settled.`);
+      }
+    });
   };
 
   const handleResetPaymentHistory = () => {
-    if (window.confirm("Clear all recorded purification payments?")) {
-      setPurificationPayments([]);
-    }
+    if (purificationPayments.length === 0) return;
+    setConfirmDialog({
+      title: "Clear Payment Records",
+      subtitle: "Purification History",
+      message: "Are you sure you want to clear all recorded purification payment history? This action cannot be undone.",
+      confirmLabel: "Clear Payment Data",
+      isDestructive: true,
+      onConfirm: () => {
+        setPurificationPayments([]);
+        triggerToast("Payment Data Cleared", "Purification settlement history wiped.");
+      }
+    });
   };
 
   const handleClearAllTrades = () => {
-    if (window.confirm("Permanently wipe your entire trade history?")) {
-      setTransactions([]);
-    }
+    setConfirmDialog({
+      title: "Wipe Trade History",
+      subtitle: "Ledger Reset",
+      message: "Are you sure you want to permanently wipe your entire transaction history stream?",
+      confirmLabel: "Wipe History",
+      isDestructive: true,
+      onConfirm: () => {
+        setTransactions([]);
+        triggerToast("Trade History Wiped", "All transactions have been removed.");
+      }
+    });
+  };
+
+  const handleRestoreApp = async () => {
+    await persistenceService.clearAllData();
+    setTransactions([]);
+    setTradeLog([]);
+    setUpdates([]);
+    setPurificationPayments([]);
+    setPrices({});
+    setRecallJsonInput('');
+    setSelectedTickerForEdit(null);
+    setEditingTransaction(null);
+    setShowRestoreModal(false);
+    setShowJsonRecall(false);
+    triggerToast("App Restored", "All entries and local database instances wiped to factory state.");
   };
 
   const handleUpdatePrice = (ticker: string, newPrice: number) => {
     setPrices(prev => ({ ...prev, [ticker]: newPrice }));
+    triggerToast("Price Updated", `${ticker} set to LKR ${newPrice}`);
   };
 
   const refreshPrices = useCallback(async () => {
@@ -293,13 +471,20 @@ const App: React.FC = () => {
       const { prices: newPrices } = await geminiService.fetchCurrentPrices(tickers);
       setPrices(prev => ({ ...prev, ...newPrices }));
       setLastRefreshTime(now);
-    } catch (err) { console.error(err); } finally { setIsRefreshing(false); }
-  }, [transactions, lastRefreshTime]);
+      triggerToast("Prices Refreshed", `Updated live valuations for ${Object.keys(newPrices).length} tickers.`);
+    } catch (err) { 
+      console.error(err);
+      triggerToast("Refresh Notice", "Could not fetch current prices at this time.", "error");
+    } finally { 
+      setIsRefreshing(false); 
+    }
+  }, [transactions, lastRefreshTime, triggerToast]);
 
   const addTransaction = (tx: Omit<Transaction, 'id'>) => {
     const cleanTicker = normalizeTicker(tx.ticker);
     setTransactions(prev => [...prev, normalizeTransactionData({ ...tx, ticker: cleanTicker })]);
     setShowAddForm(false);
+    triggerToast("Position Recorded", `${tx.type} ${tx.quantity.toLocaleString()} shares of ${cleanTicker}.`);
   };
 
   const applySynchronizedData = useCallback((rawData: any) => {
@@ -310,12 +495,13 @@ const App: React.FC = () => {
       if (rawData.halalList) setHalalList(prev => ({ ...prev, ...rawData.halalList }));
       setPrices(rawData.cachedPrices || rawData.prices || {});
       setPurificationPayments(rawData.purificationPayments || []);
+      triggerToast("Data Synchronized", `Loaded ${incoming.length} transactions successfully.`);
       return true;
     } catch (err: any) {
-      alert(`Sync Failed: ${err.message}`);
+      triggerToast("Sync Failed", err.message || "Invalid data format.", "error");
       return false;
     }
-  }, []);
+  }, [triggerToast]);
 
   const handleManualRecall = () => {
     try {
@@ -324,7 +510,9 @@ const App: React.FC = () => {
         setShowJsonRecall(false);
         setRecallJsonInput('');
       }
-    } catch (e: any) { alert("Invalid JSON Syntax."); }
+    } catch (e: any) {
+      triggerToast("Invalid JSON", "Could not parse JSON syntax. Check format and retry.", "error");
+    }
   };
 
   const handleDownloadJSON = () => {
@@ -404,14 +592,32 @@ const App: React.FC = () => {
                   </div>
                 )}
              </div>
-             <button type="button" onClick={() => setShowJsonRecall(true)} className="flex items-center space-x-1 px-3 py-2 text-slate-400 hover:text-slate-900 font-bold text-xs rounded-lg transition-all">
+             <button type="button" onClick={() => setShowRestoreModal(true)} className="flex items-center space-x-1 px-3 py-2 text-rose-500 hover:text-rose-700 hover:bg-rose-50 font-bold text-xs rounded-xl transition-all" title="Restore App & Delete All Entries">
+                <RotateCcw className="w-4 h-4" />
+                <span className="font-mono-terminal hidden sm:inline text-[10px] uppercase">Restore</span>
+             </button>
+             <button type="button" onClick={() => setShowJsonRecall(true)} className="flex items-center space-x-1 px-3 py-2 text-slate-400 hover:text-slate-900 font-bold text-xs rounded-lg transition-all" title="Recall Data Matrix">
                 <Upload className="w-4 h-4" />
                 <span className="font-mono-terminal hidden sm:inline text-[10px]">RECALL</span>
              </button>
              <button type="button" onClick={() => setShowImporter(true)} className="hidden sm:flex items-center space-x-1 px-3 py-2 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:opacity-80 shadow-md theme-transition" style={{ backgroundColor: currentTheme.primary }}><FileText className="w-4 h-4" /><span>Importer</span></button>
-             <button type="button" onClick={refreshPrices} disabled={isRefreshing} className="p-2 text-slate-400 hover:text-slate-900 transition-all"><RefreshCw className={`w-5 h-5 ${isRefreshing ? 'animate-spin' : ''}`} /></button>
+             <button type="button" onClick={refreshPrices} disabled={isRefreshing} className="p-2 text-slate-400 hover:text-slate-900 transition-all" title="Refresh Live Prices"><RefreshCw className={`w-5 h-5 ${isRefreshing ? 'animate-spin' : ''}`} /></button>
              <button type="button" onClick={() => setShowAddForm(true)} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-black transition-all shadow-lg">Add Position</button>
           </div>
+        </div>
+
+        {/* Mobile Tab Navigation for small screens */}
+        <div className="lg:hidden flex overflow-x-auto px-4 py-2 bg-slate-100/90 border-t border-slate-200 gap-1.5 scrollbar-hide">
+          {(['dashboard', 'prediction', 'history', 'calculator'] as const).map(tab => (
+            <button 
+              key={tab} 
+              type="button" 
+              onClick={() => setActiveTab(tab)} 
+              className={`flex-1 py-1.5 px-3 rounded-xl text-[10px] font-black uppercase tracking-widest whitespace-nowrap transition-all theme-transition text-center ${activeTab === tab ? 'text-white shadow-sm' : 'text-slate-500 hover:text-slate-900 bg-white/60'}`} 
+              style={{ backgroundColor: activeTab === tab ? currentTheme.primary : undefined }}>
+              {tab === 'dashboard' ? 'Holdings' : tab === 'prediction' ? 'Intelligence' : tab === 'history' ? 'Ledger' : 'Calculator'}
+            </button>
+          ))}
         </div>
       </nav>
 
@@ -439,10 +645,11 @@ const App: React.FC = () => {
                 <PortfolioTable 
                   data={portfolioData} 
                   onEditTicker={setSelectedTickerForEdit} 
-                  onDeleteTicker={(t) => { if(confirm(`Wipe all positions for ${t}?`)) setTransactions(prev => prev.filter(tr => normalizeTicker(tr.ticker) !== normalizeTicker(t))) }} 
+                  onDeleteTicker={handleDeleteTicker} 
                   onEditTransaction={(id) => setEditingTransaction(transactions.find(t => t.id === id) || null)} 
                   onDeleteTransaction={handleDelete} 
                   onUpdateTransaction={handleEditSubmit} 
+                  onUpdateBesPrice={handleUpdateBesPrice}
                   onUpdatePrice={handleUpdatePrice} 
                   halalList={halalList} 
                 />
@@ -500,8 +707,8 @@ const App: React.FC = () => {
                     <p className="text-[10px] text-slate-400 font-bold font-mono-terminal uppercase tracking-[0.2em] mt-1">Transaction History Stream</p>
                   </div>
                   <div className="flex gap-2">
-                    <button type="button" onClick={handleClearAllTrades} className="flex items-center gap-2 px-4 py-2 bg-rose-50 text-rose-600 rounded-xl text-[10px] font-black border border-rose-100 hover:bg-rose-600 hover:text-white transition-all uppercase">
-                      <Trash2 className="w-4 h-4" /> Clear All History
+                    <button type="button" onClick={() => setShowRestoreModal(true)} className="flex items-center gap-2 px-4 py-2 bg-rose-50 text-rose-600 rounded-xl text-[10px] font-black border border-rose-100 hover:bg-rose-600 hover:text-white transition-all uppercase font-mono-terminal">
+                      <RotateCcw className="w-4 h-4" /> Restore & Wipe All
                     </button>
                     <button type="button" onClick={() => window.print()} className="flex items-center gap-2 px-4 py-2 bg-white text-slate-500 rounded-xl text-[10px] font-black border border-slate-200 hover:bg-slate-50 transition-all uppercase shadow-sm">
                       <Download className="w-4 h-4" /> Export Report
@@ -542,8 +749,22 @@ const App: React.FC = () => {
                          </td>
                          <td className="px-4 py-6">
                            <div className="flex items-center justify-center gap-2">
-                             <button type="button" onClick={() => setEditingTransaction(t)} className="p-2 text-slate-300 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-all"><Edit2 className="w-4 h-4" /></button>
-                             <button type="button" onClick={() => handleDelete(t.id)} className="p-2 text-rose-300 hover:text-white hover:bg-rose-500 rounded-xl transition-all"><Trash2 className="w-4 h-4" /></button>
+                             <button 
+                               type="button" 
+                               onClick={() => setEditingTransaction(t)} 
+                               className="p-2 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"
+                               title="Edit transaction"
+                             >
+                               <Edit2 className="w-4 h-4" />
+                             </button>
+                             <button 
+                               type="button" 
+                               onClick={() => handleDelete(t.id)} 
+                               className="p-2 text-rose-500 hover:text-white hover:bg-rose-600 rounded-xl transition-all"
+                               title="Delete transaction"
+                             >
+                               <Trash2 className="w-4 h-4" />
+                             </button>
                            </div>
                          </td>
                        </tr>
@@ -563,7 +784,9 @@ const App: React.FC = () => {
           try {
             const data = await persistenceService.parseImportFile(file);
             if (applySynchronizedData(data)) setShowJsonRecall(false);
-          } catch (err) { alert("Matrix Read Failed."); }
+          } catch (err) { 
+            triggerToast("Matrix Read Error", "Failed to parse file. Make sure it is valid JSON.", "error"); 
+          }
         }
       }} />
 
@@ -584,14 +807,159 @@ const App: React.FC = () => {
                 <span>Inject Logical Snapshot (.json)</span>
               </button>
               <div className="space-y-3">
-                <p className="text-[9px] font-black text-slate-400 uppercase tracking-[0.3em] text-center">Manual Logic Import</p>
+                <div className="flex items-center justify-between">
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-[0.3em]">Manual Logic Import</p>
+                  {recallJsonInput && (
+                    <button 
+                      type="button" 
+                      onClick={() => setRecallJsonInput('')} 
+                      className="text-[10px] font-bold text-rose-500 hover:text-rose-700 font-mono-terminal uppercase"
+                    >
+                      Clear Input
+                    </button>
+                  )}
+                </div>
                 <textarea value={recallJsonInput} onChange={(e) => setRecallJsonInput(e.target.value)} 
                   className="w-full h-40 p-6 bg-slate-50 border border-slate-200 rounded-[2rem] font-mono-terminal text-xs outline-none text-slate-800 focus:border-indigo-300" 
                   placeholder='{"transactions": [...]}' />
                 <button type="button" onClick={handleManualRecall} className="w-full py-5 bg-slate-900 text-white rounded-2xl font-black uppercase text-xs hover:bg-black transition-all shadow-lg">Commit to Local Instance</button>
+                <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+                  <span className="text-[10px] text-slate-400 font-mono-terminal">Need to start fresh?</span>
+                  <button 
+                    type="button" 
+                    onClick={() => { setShowJsonRecall(false); setShowRestoreModal(true); }} 
+                    className="text-[10px] font-bold text-rose-500 hover:text-rose-700 font-mono-terminal uppercase flex items-center gap-1 hover:underline"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    Restore & Wipe All Data
+                  </button>
+                </div>
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {showRestoreModal && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-lg overflow-hidden border border-rose-100 animate-in zoom-in-95 duration-200">
+            <div className="px-8 py-6 bg-rose-50 border-b border-rose-100 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-rose-600 text-white rounded-2xl shadow-md">
+                  <AlertTriangle className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-rose-950 uppercase tracking-tight">Restore App</h3>
+                  <p className="text-[10px] font-bold text-rose-600 font-mono-terminal uppercase tracking-wider">Factory Data Reset</p>
+                </div>
+              </div>
+              <button type="button" onClick={() => setShowRestoreModal(false)} className="p-2 hover:bg-rose-100 rounded-full transition-colors text-rose-500">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-8 space-y-6">
+              <div className="p-5 rounded-2xl bg-rose-50/50 border border-rose-100 space-y-3 text-xs text-slate-700">
+                <p className="font-black text-rose-900 text-sm">Are you sure you want to restore the app and delete all entries?</p>
+                <p className="text-slate-600">This action cannot be undone and will permanently wipe:</p>
+                <ul className="list-disc pl-5 space-y-1 font-mono-terminal text-[11px] text-slate-600">
+                  <li>All buy and sell stock transaction entries</li>
+                  <li>Portfolio inventory, lots & realized P/L</li>
+                  <li>Recorded purification payment history</li>
+                  <li>Market prediction notes & AI summaries</li>
+                  <li>Live cached prices & browser local storage</li>
+                </ul>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowRestoreModal(false)}
+                  className="flex-1 py-4 px-5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-black uppercase text-xs rounded-2xl transition-all font-mono-terminal"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRestoreApp}
+                  className="flex-1 py-4 px-5 bg-rose-600 hover:bg-rose-700 text-white font-black uppercase text-xs rounded-2xl transition-all shadow-lg shadow-rose-200 flex items-center justify-center gap-2 font-mono-terminal"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>Restore & Delete All</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDialog && (
+        <div className="fixed inset-0 z-[115] flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-md overflow-hidden border border-slate-200 animate-in zoom-in-95 duration-200">
+            <div className={`px-8 py-6 border-b flex items-center justify-between ${confirmDialog.isDestructive ? 'bg-rose-50 border-rose-100' : 'bg-indigo-50 border-indigo-100'}`}>
+              <div className="flex items-center gap-3">
+                <div className={`p-2.5 rounded-2xl shadow-md text-white ${confirmDialog.isDestructive ? 'bg-rose-600 shadow-rose-200' : 'bg-indigo-600 shadow-indigo-200'}`}>
+                  {confirmDialog.isDestructive ? <Trash2 className="w-5 h-5" /> : <ShieldCheck className="w-5 h-5" />}
+                </div>
+                <div>
+                  <h3 className={`text-base font-black uppercase tracking-tight ${confirmDialog.isDestructive ? 'text-rose-950' : 'text-indigo-950'}`}>{confirmDialog.title}</h3>
+                  {confirmDialog.subtitle && (
+                    <p className={`text-[10px] font-bold font-mono-terminal uppercase tracking-wider ${confirmDialog.isDestructive ? 'text-rose-600' : 'text-indigo-600'}`}>{confirmDialog.subtitle}</p>
+                  )}
+                </div>
+              </div>
+              <button type="button" onClick={() => setConfirmDialog(null)} className="p-2 hover:bg-black/5 rounded-full transition-colors text-slate-400">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-8 space-y-6">
+              <p className="text-sm font-medium text-slate-700 leading-relaxed font-mono-terminal">
+                {confirmDialog.message}
+              </p>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmDialog(null)}
+                  className="flex-1 py-3.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-black uppercase text-xs rounded-2xl transition-all font-mono-terminal"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const action = confirmDialog.onConfirm;
+                    setConfirmDialog(null);
+                    action();
+                  }}
+                  className={`flex-1 py-3.5 px-4 text-white font-black uppercase text-xs rounded-2xl transition-all shadow-lg font-mono-terminal flex items-center justify-center gap-2 ${
+                    confirmDialog.isDestructive 
+                      ? 'bg-rose-600 hover:bg-rose-700 shadow-rose-200' 
+                      : 'bg-slate-900 hover:bg-black shadow-slate-200'
+                  }`}
+                >
+                  {confirmDialog.isDestructive && <Trash2 className="w-4 h-4" />}
+                  <span>{confirmDialog.confirmLabel || 'Confirm'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-[120] bg-slate-900 text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 border border-slate-700 animate-in slide-in-from-bottom-5 duration-300 font-mono-terminal text-xs max-w-sm">
+          <div className={`p-2 rounded-xl font-black ${toast.type === 'error' ? 'bg-rose-500 text-white' : 'bg-emerald-500 text-slate-950'}`}>
+            {toast.type === 'error' ? <AlertTriangle className="w-4 h-4" /> : <CheckCircle className="w-4 h-4" />}
+          </div>
+          <div className="flex-1">
+            <p className="font-bold text-white uppercase text-[11px]">{toast.message}</p>
+            {toast.submessage && <p className="text-slate-400 text-[10px] mt-0.5">{toast.submessage}</p>}
+          </div>
+          <button type="button" onClick={() => setToast(null)} className="text-slate-400 hover:text-white p-1">
+            <X className="w-4 h-4" />
+          </button>
         </div>
       )}
 
@@ -600,9 +968,16 @@ const App: React.FC = () => {
       {selectedTickerForEdit && <TransactionListModal ticker={selectedTickerForEdit} transactions={transactions.filter(t => normalizeTicker(t.ticker) === normalizeTicker(selectedTickerForEdit))} onClose={() => setSelectedTickerForEdit(null)} onEdit={(tx) => { setEditingTransaction(tx); setSelectedTickerForEdit(null); }} onDelete={handleDelete} />}
       {editingTransaction && (
         <TransactionForm 
-          initialTicker={editingTransaction.ticker} initialPrice={editingTransaction.buyPrice} initialNetAmount={editingTransaction.netAmount} 
-          initialQuantity={editingTransaction.quantity} initialDate={editingTransaction.date} initialType={editingTransaction.type} 
-          isEditing={true} onSubmit={(fields) => handleEditSubmit(editingTransaction.id, fields)} onClose={() => setEditingTransaction(null)}
+          initialTicker={editingTransaction.ticker} 
+          initialPrice={editingTransaction.buyPrice} 
+          initialNetAmount={editingTransaction.netAmount} 
+          initialQuantity={editingTransaction.quantity} 
+          initialBesPrice={editingTransaction.besPrice}
+          initialDate={editingTransaction.date} 
+          initialType={editingTransaction.type} 
+          isEditing={true} 
+          onSubmit={(fields) => handleEditSubmit(editingTransaction.id, fields)} 
+          onClose={() => setEditingTransaction(null)}
         />
       )}
     </div>

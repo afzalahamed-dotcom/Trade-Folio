@@ -97,14 +97,7 @@ export const DocumentParser: React.FC<Props> = ({ onClose, onConfirm, onDownload
   };
 
   const handleConfirm = () => {
-    if (importMode === 'statement' || files.some(f => f.type === 'excel')) {
-      const tickersInStatement = new Set(extracted.map(e => e.ticker.toUpperCase()));
-      if (confirm(`Importing these records will update positions for: ${Array.from(tickersInStatement).join(', ')}. Continue?`)) {
-        onConfirm(extracted);
-      }
-    } else {
-      onConfirm(extracted);
-    }
+    onConfirm(extracted);
   };
 
   return (

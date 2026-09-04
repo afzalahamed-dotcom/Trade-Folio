@@ -132,7 +132,10 @@ export const PLCalculator: React.FC<Props> = ({ portfolioData }) => {
                   <td className="px-6 py-6 whitespace-nowrap">
                     <div className="flex flex-col">
                       <span className="text-sm font-black text-gray-900 group-hover:text-indigo-600 transition-colors">{row.ticker}</span>
-                      <span className="text-[10px] font-bold text-gray-400 uppercase">@ LKR {row.currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                      <div className="flex items-center gap-1.5 text-[10px] font-bold">
+                        <span className="text-gray-400">@ LKR {row.currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                        <span className="text-indigo-600 font-mono-terminal">· BES: LKR {(row.besPrice || (row.avgBuyPrice ? row.avgBuyPrice / (1 - 0.0112) : 0)).toFixed(2)}</span>
+                      </div>
                     </div>
                   </td>
                   <td className="px-6 py-6 whitespace-nowrap text-right">

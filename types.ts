@@ -5,6 +5,7 @@ export interface Transaction {
   quantity: number;
   buyPrice: number; // Price per share
   netAmount: number; // Total net amount from broker document (includes fees)
+  besPrice?: number; // Break Even Selling price (including CSE 1.12% buy & sell costs)
   sellPrice?: number;
   date: string;
   type: 'BUY' | 'SELL';
@@ -43,6 +44,7 @@ export interface PortfolioLot {
   transactionId: string;
   quantity: number;
   purchasePrice: number;
+  besPrice?: number; // Break Even Selling price (including CSE 1.12% sell costs)
   totalPurchaseNet: number; // The actual money paid out
   currentValue: number;
   profitOrLoss: number;
@@ -54,6 +56,7 @@ export interface PortfolioRow {
   ticker: string;
   totalQty: number;
   avgBuyPrice: number;
+  besPrice: number; // Break Even Selling price per share (CSE standard)
   currentPrice: number;
   totalValue: number;
   totalInvestment: number; // Sum of Net Amounts of remaining lots

@@ -12,15 +12,26 @@ const normalizeTicker = (t: string): string => {
 };
 
 // Ensure all transaction fields are mapped correctly upon loading
-const normalizeLoadedTransaction = (tx: any): Transaction => ({
-  id: tx.id || crypto.randomUUID(),
-  ticker: normalizeTicker(tx.ticker || tx.symbol || tx.stock || ''),
-  quantity: Number(tx.quantity || tx.qty || tx.volume || 0),
-  buyPrice: Number(tx.buyPrice || tx.price || tx.avgPrice || tx.avgCost || 0),
-  netAmount: Number(tx.netAmount || tx.totalAmount || tx.cost || ((tx.quantity || tx.qty || 0) * (tx.buyPrice || tx.price || 0)) || 0),
-  date: tx.date || new Date().toISOString().split('T')[0],
-  type: (tx.type || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY'
-});
+const normalizeLoadedTransaction = (tx: any): Transaction => {
+  const qty = Number(tx.quantity || tx.qty || tx.volume || 0);
+  const prc = Number(tx.buyPrice || tx.price || tx.avgPrice || tx.avgCost || 0);
+  const type = (tx.type || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+  let net = Number(tx.netAmount || tx.totalAmount || tx.cost || 0);
+  if (!net && qty > 0 && prc > 0) {
+    net = type === 'BUY' ? Math.round(qty * prc * 1.0112 * 100) / 100 : Math.round(qty * prc * (1 - 0.0112) * 100) / 100;
+  }
+  return {
+    id: tx.id || crypto.randomUUID(),
+    ticker: normalizeTicker(tx.ticker || tx.symbol || tx.stock || ''),
+    quantity: qty,
+    buyPrice: prc,
+    netAmount: net,
+    besPrice: tx.besPrice ? Number(tx.besPrice) : undefined,
+    sellPrice: tx.sellPrice ? Number(tx.sellPrice) : undefined,
+    date: tx.date || new Date().toISOString().split('T')[0],
+    type
+  };
+};
 
 export class PersistenceService {
   private static instance: PersistenceService;
@@ -93,6 +104,30 @@ export class PersistenceService {
     link.click();
     URL.revokeObjectURL(url);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }
+
+  async clearAllData(): Promise<DatabaseState> {
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.clear();
+    } catch (e) {
+      console.error('Local storage clear failed:', e);
+    }
+    const cleanState: DatabaseState = {
+      transactions: [],
+      tradeLog: [],
+      updates: [],
+      halalList: {},
+      cachedPrices: {},
+      purificationPayments: [],
+      lastUpdated: new Date().toISOString()
+    };
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(cleanState));
+    } catch (e) {
+      console.error('Init clean state failed:', e);
+    }
+    return cleanState;
   }
 
   async parseImportFile(file: File): Promise<DatabaseState> {

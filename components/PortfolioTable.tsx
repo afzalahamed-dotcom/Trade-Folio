@@ -10,6 +10,7 @@ interface Props {
   onEditTransaction: (id: string) => void;
   onDeleteTransaction: (id: string) => void;
   onUpdateTransaction: (id: string, updates: Partial<Transaction>) => void;
+  onUpdateBesPrice?: (idOrTicker: string, newBesPrice: number, context?: any) => void;
   onUpdatePrice: (ticker: string, newPrice: number) => void;
   halalList: Record<string, number>;
   compact?: boolean;
@@ -22,6 +23,7 @@ export const PortfolioTable: React.FC<Props> = ({
   onEditTransaction, 
   onDeleteTransaction, 
   onUpdateTransaction,
+  onUpdateBesPrice,
   onUpdatePrice,
   halalList 
 }) => {
@@ -38,16 +40,34 @@ export const PortfolioTable: React.FC<Props> = ({
 
   const handleSave = () => {
     if (!editingCell) return;
-    const { idOrTicker, field, value } = editingCell;
+    const { idOrTicker, field, value, context } = editingCell;
     const numValue = parseFloat(value) || 0;
 
     if (field === 'currentPrice') {
       onUpdatePrice(idOrTicker, numValue);
+    } else if (field === 'besPrice') {
+      if (onUpdateBesPrice) {
+        onUpdateBesPrice(idOrTicker, numValue, context);
+      } else {
+        onUpdateTransaction(idOrTicker, { besPrice: numValue });
+      }
     } else {
       const updates: any = {};
       if (field === 'quantity') updates.quantity = numValue;
-      if (field === 'purchasePrice') updates.buyPrice = numValue;
-      if (field === 'totalPurchaseNet') updates.netAmount = numValue;
+      if (field === 'purchasePrice') {
+        updates.buyPrice = numValue;
+        // Recalculate standard CSE BES Price: (buyPrice * 1.0112) / 0.9888
+        updates.besPrice = Math.round(((numValue * 1.0112) / 0.9888) * 100) / 100;
+        if (context?.quantity) {
+          updates.netAmount = Math.round(context.quantity * numValue * 1.0112 * 100) / 100;
+        }
+      }
+      if (field === 'totalPurchaseNet') {
+        updates.netAmount = numValue;
+        if (context?.quantity > 0) {
+          updates.besPrice = Math.round((numValue / (context.quantity * (1 - 0.0112))) * 100) / 100;
+        }
+      }
       if (field === 'date') updates.date = value;
       onUpdateTransaction(idOrTicker, updates);
     }
@@ -100,7 +120,7 @@ export const PortfolioTable: React.FC<Props> = ({
           <tr className="border-b border-slate-100">
             <th className="px-6 py-4 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Asset Vector</th>
             <th className="px-6 py-4 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Units</th>
-            <th className="px-6 py-4 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Avg Cost</th>
+            <th className="px-6 py-4 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest" title="Break Even Selling Price per share (includes CSE 1.12% buying and selling fees)">BES Price</th>
             <th className="px-6 py-4 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Cost</th>
             <th className="px-6 py-4 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Price Point</th>
             <th className="px-6 py-4 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Net Flux</th>
@@ -136,8 +156,20 @@ export const PortfolioTable: React.FC<Props> = ({
                   <td className="px-6 py-5 whitespace-nowrap text-sm text-right font-mono-terminal font-black text-slate-800">
                     {row.totalQty.toLocaleString()}
                   </td>
-                  <td className="px-6 py-5 whitespace-nowrap text-sm text-right font-mono-terminal font-bold text-slate-400">
-                    {row.avgBuyPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  <td className="px-6 py-5 whitespace-nowrap text-sm text-right font-mono-terminal">
+                    <div className="flex flex-col items-end">
+                      {renderEditableCell(
+                        row.ticker,
+                        'besPrice',
+                        Number((row.besPrice || 0).toFixed(2)),
+                        (row.besPrice || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+                        true,
+                        { lots: row.lots, totalQty: row.totalQty, avgBuyPrice: row.avgBuyPrice }
+                      )}
+                      <span className="text-[9px] font-bold text-slate-400 tracking-tight" title={`Simple Average Buy Cost: LKR ${row.avgBuyPrice.toFixed(2)}`}>
+                        AVG {row.avgBuyPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
                   </td>
                   <td className="px-6 py-5 whitespace-nowrap text-sm text-right font-mono-terminal font-bold text-slate-900">
                     {row.totalInvestment.toLocaleString(undefined, { minimumFractionDigits: 2 })}
@@ -158,8 +190,22 @@ export const PortfolioTable: React.FC<Props> = ({
                   </td>
                   <td className="px-6 py-5 whitespace-nowrap text-center">
                     <div className="flex items-center justify-center gap-2">
-                      <button onClick={(e) => { e.stopPropagation(); onEditTicker(row.ticker); }} className="p-2 bg-slate-50 text-slate-400 hover:text-white hover:bg-indigo-600 rounded-xl transition-all shadow-sm"><Edit2 className="w-4 h-4" /></button>
-                      <button onClick={(e) => { e.stopPropagation(); onDeleteTicker(row.ticker); }} className="p-2 bg-slate-50 text-slate-300 hover:text-white hover:bg-rose-600 rounded-xl transition-all shadow-sm"><Trash2 className="w-4 h-4" /></button>
+                      <button 
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); onEditTicker(row.ticker); }} 
+                        className="p-2 bg-slate-100 text-slate-600 hover:text-white hover:bg-indigo-600 rounded-xl transition-all shadow-sm"
+                        title={`Edit transactions for ${row.ticker}`}
+                      >
+                        <Edit2 className="w-4 h-4" />
+                      </button>
+                      <button 
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); onDeleteTicker(row.ticker); }} 
+                        className="p-2 bg-rose-50 text-rose-500 hover:text-white hover:bg-rose-600 rounded-xl transition-all shadow-sm"
+                        title={`Delete all positions for ${row.ticker}`}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -180,8 +226,20 @@ export const PortfolioTable: React.FC<Props> = ({
                     <td className="px-6 py-4 whitespace-nowrap text-xs text-right text-slate-500 font-mono-terminal">
                       {renderEditableCell(lot.transactionId, 'quantity', lot.quantity, lot.quantity.toLocaleString(), true)}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-xs text-right text-slate-400 font-bold font-mono-terminal">
-                      {renderEditableCell(lot.transactionId, 'purchasePrice', lot.purchasePrice, lot.purchasePrice.toLocaleString(undefined, { minimumFractionDigits: 2 }), true)}
+                    <td className="px-6 py-4 whitespace-nowrap text-xs text-right font-mono-terminal">
+                      <div className="flex flex-col items-end">
+                        {renderEditableCell(
+                          lot.transactionId,
+                          'besPrice',
+                          Number((lot.besPrice || 0).toFixed(2)),
+                          (lot.besPrice || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+                          true,
+                          { quantity: lot.quantity, purchasePrice: lot.purchasePrice }
+                        )}
+                        <div className="text-[8px] text-slate-400">
+                          {renderEditableCell(lot.transactionId, 'purchasePrice', lot.purchasePrice, `BUY ${lot.purchasePrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}`, true, { quantity: lot.quantity })}
+                        </div>
+                      </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-xs text-right text-slate-400 font-bold font-mono-terminal">
                       {lot.totalPurchaseNet.toLocaleString(undefined, { minimumFractionDigits: 2 })}
@@ -203,9 +261,23 @@ export const PortfolioTable: React.FC<Props> = ({
                       ) : '-'}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-center">
-                      <div className="flex items-center justify-center gap-2 opacity-0 group-hover/lot:opacity-100 transition-opacity">
-                        <button onClick={(e) => { e.stopPropagation(); onEditTransaction(lot.transactionId); }} className="p-1.5 text-slate-300 hover:text-indigo-600 transition-colors"><Edit3 className="w-3.5 h-3.5" /></button>
-                        <button onClick={(e) => { e.stopPropagation(); onDeleteTransaction(lot.transactionId); }} className="p-1.5 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
+                      <div className="flex items-center justify-center gap-2 opacity-80 group-hover/lot:opacity-100 transition-opacity">
+                        <button 
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); onEditTransaction(lot.transactionId); }} 
+                          className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                          title="Edit snapshot transaction"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); onDeleteTransaction(lot.transactionId); }} 
+                          className="p-1.5 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                          title="Delete snapshot transaction"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </td>
                   </tr>
